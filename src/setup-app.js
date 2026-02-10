@@ -214,14 +214,14 @@
   var pairingBtn = document.getElementById('pairingApprove');
   if (pairingBtn) {
     pairingBtn.onclick = function () {
-      var channel = prompt('Enter channel (telegram or discord):');
+      var channel = prompt('Enter channel name (telegram, discord, or webchat) - not channel ID:');
       if (!channel) return;
       channel = channel.trim().toLowerCase();
-      if (channel !== 'telegram' && channel !== 'discord') {
-        alert('Channel must be "telegram" or "discord"');
+      if (channel !== 'telegram' && channel !== 'discord' && channel !== 'webchat') {
+        alert('Channel must be "telegram", "discord", or "webchat"');
         return;
       }
-      var code = prompt('Enter pairing code (e.g. 3EY4PUYS):');
+      var code = prompt('Enter pairing code from the bot/client (e.g. 3EY4PUYS):');
       if (!code) return;
       logEl.textContent += '\nApproving pairing for ' + channel + '...\n';
       fetch('/setup/api/pairing/approve', {

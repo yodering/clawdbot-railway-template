@@ -306,6 +306,7 @@ app.get("/setup", requireSetupAuth, (_req, res) => {
         <option value="openclaw.status">openclaw status</option>
         <option value="openclaw.health">openclaw health</option>
         <option value="openclaw.doctor">openclaw doctor</option>
+        <option value="openclaw.doctor.fix">openclaw doctor --fix</option>
         <option value="openclaw.logs.tail">openclaw logs --tail N</option>
         <option value="openclaw.config.get">openclaw config get &lt;path&gt;</option>
         <option value="openclaw.version">openclaw --version</option>
@@ -542,6 +543,12 @@ app.post("/setup/api/run", requireSetupAuth, async (req, res) => {
   const payload = req.body || {};
   const onboardArgs = buildOnboardArgs(payload);
   const onboard = await runCmd(OPENCLAW_NODE, clawArgs(onboardArgs));
+  const requestedAnyChannel = Boolean(
+    payload.telegramToken?.trim() ||
+    payload.discordToken?.trim() ||
+    payload.slackBotToken?.trim() ||
+    payload.slackAppToken?.trim(),
+  );
 
   let extra = "";
 
@@ -626,6 +633,12 @@ app.post("/setup/api/run", requireSetupAuth, async (req, res) => {
       }
     }
 
+    // Channel settings may require doctor fixes before they become active.
+    if (requestedAnyChannel) {
+      const doctorFix = await runCmd(OPENCLAW_NODE, clawArgs(["doctor", "--fix"]));
+      extra += `\n[doctor --fix] exit=${doctorFix.code} (output ${doctorFix.output.length} chars)\n${doctorFix.output || "(no output)"}`;
+    }
+
     // Apply changes immediately.
     await restartGateway();
   }
@@ -686,6 +699,7 @@ const ALLOWED_CONSOLE_COMMANDS = new Set([
   "openclaw.status",
   "openclaw.health",
   "openclaw.doctor",
+  "openclaw.doctor.fix",
   "openclaw.logs.tail",
   "openclaw.config.get",
 ]);
@@ -731,6 +745,10 @@ app.post("/setup/api/console/run", requireSetupAuth, async (req, res) => {
     }
     if (cmd === "openclaw.doctor") {
       const r = await runCmd(OPENCLAW_NODE, clawArgs(["doctor"]));
+      return res.status(r.code === 0 ? 200 : 500).json({ ok: r.code === 0, output: redactSecrets(r.output) });
+    }
+    if (cmd === "openclaw.doctor.fix") {
+      const r = await runCmd(OPENCLAW_NODE, clawArgs(["doctor", "--fix"]));
       return res.status(r.code === 0 ? 200 : 500).json({ ok: r.code === 0, output: redactSecrets(r.output) });
     }
     if (cmd === "openclaw.logs.tail") {
