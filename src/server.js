@@ -820,7 +820,7 @@ app.post("/setup/api/console/run", requireSetupAuth, async (req, res) => {
 
         const txt = String(r.output || "");
         const looksLikeCliSyntaxMismatch =
-          /unknown option|unknown command|usage:|Unexpected argument/i.test(txt);
+          /unknown option|unknown command|usage:|Unexpected argument|too many arguments|expected 0 arguments/i.test(txt);
 
         if (!looksLikeCliSyntaxMismatch || i === candidates.length - 1) {
           return res.status(500).json({ ok: false, output: redactSecrets(txt) });
