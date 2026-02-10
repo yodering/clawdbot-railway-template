@@ -189,6 +189,9 @@ async function startGateway() {
 async function ensureGatewayRunning() {
   if (!isConfigured()) return { ok: false, reason: "not configured" };
   if (gatewayProc) return { ok: true };
+  // If OpenClaw self-reloaded and is already listening, don't try to spawn again.
+  const alreadyReady = await waitForGatewayReady({ timeoutMs: 750 });
+  if (alreadyReady) return { ok: true };
   if (!gatewayStarting) {
     gatewayStarting = (async () => {
       await startGateway();
@@ -307,6 +310,8 @@ app.get("/setup", requireSetupAuth, (_req, res) => {
         <option value="openclaw.health">openclaw health</option>
         <option value="openclaw.doctor">openclaw doctor</option>
         <option value="openclaw.doctor.fix">openclaw doctor --fix</option>
+        <option value="openclaw.channels.status.probe">openclaw channels status --probe</option>
+        <option value="openclaw.pairing.list">openclaw pairing list &lt;channel&gt;</option>
         <option value="openclaw.logs.tail">openclaw logs --tail N</option>
         <option value="openclaw.config.get">openclaw config get &lt;path&gt;</option>
         <option value="openclaw.version">openclaw --version</option>
@@ -530,6 +535,23 @@ function runCmd(cmd, args, opts = {}) {
   });
 }
 
+async function tryEnableChannelPlugin(channel) {
+  const candidates = [
+    `plugins.entries.${channel}.enabled`,
+    `plugins.${channel}.enabled`,
+  ];
+
+  let combined = "";
+  for (const key of candidates) {
+    const r = await runCmd(OPENCLAW_NODE, clawArgs(["config", "set", "--json", key, "true"]));
+    combined += `\n[plugin enable ${key}] exit=${r.code} (output ${r.output.length} chars)\n${r.output || "(no output)"}`;
+    if (r.code === 0) {
+      return { ok: true, output: combined };
+    }
+  }
+  return { ok: false, output: combined };
+}
+
 app.post("/setup/api/run", requireSetupAuth, async (req, res) => {
   try {
     if (isConfigured()) {
@@ -586,8 +608,10 @@ app.post("/setup/api/run", requireSetupAuth, async (req, res) => {
           clawArgs(["config", "set", "--json", "channels.telegram", JSON.stringify(cfgObj)]),
         );
         const get = await runCmd(OPENCLAW_NODE, clawArgs(["config", "get", "channels.telegram"]));
+        const pluginEnable = await tryEnableChannelPlugin("telegram");
         extra += `\n[telegram config] exit=${set.code} (output ${set.output.length} chars)\n${set.output || "(no output)"}`;
         extra += `\n[telegram verify] exit=${get.code} (output ${get.output.length} chars)\n${get.output || "(no output)"}`;
+        extra += `\n[telegram plugin] ok=${pluginEnable.ok}\n${pluginEnable.output}`;
       }
     }
 
@@ -609,8 +633,10 @@ app.post("/setup/api/run", requireSetupAuth, async (req, res) => {
           clawArgs(["config", "set", "--json", "channels.discord", JSON.stringify(cfgObj)]),
         );
         const get = await runCmd(OPENCLAW_NODE, clawArgs(["config", "get", "channels.discord"]));
+        const pluginEnable = await tryEnableChannelPlugin("discord");
         extra += `\n[discord config] exit=${set.code} (output ${set.output.length} chars)\n${set.output || "(no output)"}`;
         extra += `\n[discord verify] exit=${get.code} (output ${get.output.length} chars)\n${get.output || "(no output)"}`;
+        extra += `\n[discord plugin] ok=${pluginEnable.ok}\n${pluginEnable.output}`;
       }
     }
 
@@ -628,8 +654,10 @@ app.post("/setup/api/run", requireSetupAuth, async (req, res) => {
           clawArgs(["config", "set", "--json", "channels.slack", JSON.stringify(cfgObj)]),
         );
         const get = await runCmd(OPENCLAW_NODE, clawArgs(["config", "get", "channels.slack"]));
+        const pluginEnable = await tryEnableChannelPlugin("slack");
         extra += `\n[slack config] exit=${set.code} (output ${set.output.length} chars)\n${set.output || "(no output)"}`;
         extra += `\n[slack verify] exit=${get.code} (output ${get.output.length} chars)\n${get.output || "(no output)"}`;
+        extra += `\n[slack plugin] ok=${pluginEnable.ok}\n${pluginEnable.output}`;
       }
     }
 
@@ -637,6 +665,8 @@ app.post("/setup/api/run", requireSetupAuth, async (req, res) => {
     if (requestedAnyChannel) {
       const doctorFix = await runCmd(OPENCLAW_NODE, clawArgs(["doctor", "--fix"]));
       extra += `\n[doctor --fix] exit=${doctorFix.code} (output ${doctorFix.output.length} chars)\n${doctorFix.output || "(no output)"}`;
+      const probe = await runCmd(OPENCLAW_NODE, clawArgs(["channels", "status", "--probe"]));
+      extra += `\n[channels status --probe] exit=${probe.code} (output ${probe.output.length} chars)\n${probe.output || "(no output)"}`;
     }
 
     // Apply changes immediately.
@@ -701,6 +731,8 @@ const ALLOWED_CONSOLE_COMMANDS = new Set([
   "openclaw.health",
   "openclaw.doctor",
   "openclaw.doctor.fix",
+  "openclaw.channels.status.probe",
+  "openclaw.pairing.list",
   "openclaw.logs.tail",
   "openclaw.config.get",
 ]);
@@ -750,6 +782,24 @@ app.post("/setup/api/console/run", requireSetupAuth, async (req, res) => {
     }
     if (cmd === "openclaw.doctor.fix") {
       const r = await runCmd(OPENCLAW_NODE, clawArgs(["doctor", "--fix"]));
+      return res.status(r.code === 0 ? 200 : 500).json({ ok: r.code === 0, output: redactSecrets(r.output) });
+    }
+    if (cmd === "openclaw.channels.status.probe") {
+      const probe = await runCmd(OPENCLAW_NODE, clawArgs(["channels", "status", "--probe"]));
+      if (probe.code === 0) {
+        return res.json({ ok: true, output: redactSecrets(probe.output) });
+      }
+      const plain = await runCmd(OPENCLAW_NODE, clawArgs(["channels", "status"]));
+      return res
+        .status(plain.code === 0 ? 200 : 500)
+        .json({ ok: plain.code === 0, output: redactSecrets(plain.output || probe.output) });
+    }
+    if (cmd === "openclaw.pairing.list") {
+      const channel = (arg || "telegram").trim().toLowerCase();
+      if (!/^[a-z0-9_-]{2,32}$/.test(channel)) {
+        return res.status(400).json({ ok: false, error: "Invalid channel name" });
+      }
+      const r = await runCmd(OPENCLAW_NODE, clawArgs(["pairing", "list", channel]));
       return res.status(r.code === 0 ? 200 : 500).json({ ok: r.code === 0, output: redactSecrets(r.output) });
     }
     if (cmd === "openclaw.logs.tail") {
