@@ -12,6 +12,9 @@
   var consoleArgEl = document.getElementById('consoleArg');
   var consoleRunEl = document.getElementById('consoleRun');
   var consoleOutEl = document.getElementById('consoleOut');
+  var cliCommandEl = document.getElementById('cliCommand');
+  var cliRunEl = document.getElementById('cliRun');
+  var cliOutEl = document.getElementById('cliOut');
 
   // Config editor
   var configPathEl = document.getElementById('configPath');
@@ -143,6 +146,39 @@
 
   if (consoleRunEl) {
     consoleRunEl.onclick = runConsole;
+  }
+
+  function runCliCommand() {
+    if (!cliRunEl || !cliCommandEl) return;
+    var cli = (cliCommandEl.value || '').trim();
+    if (!cli) {
+      if (cliOutEl) cliOutEl.textContent = 'Enter a command first.';
+      return;
+    }
+    if (cliOutEl) cliOutEl.textContent = 'Running CLI command...\n';
+
+    return httpJson('/setup/api/console/run', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ cmd: 'openclaw.raw', arg: cli })
+    }).then(function (j) {
+      if (cliOutEl) cliOutEl.textContent = (j.output || JSON.stringify(j, null, 2));
+      return refreshStatus();
+    }).catch(function (e) {
+      if (cliOutEl) cliOutEl.textContent += '\nError: ' + String(e) + '\n';
+    });
+  }
+
+  if (cliRunEl) {
+    cliRunEl.onclick = runCliCommand;
+  }
+  if (cliCommandEl) {
+    cliCommandEl.onkeydown = function (ev) {
+      if (ev.key === 'Enter') {
+        ev.preventDefault();
+        runCliCommand();
+      }
+    };
   }
 
   // Config raw load/save

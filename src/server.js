@@ -299,7 +299,15 @@ app.get("/setup", requireSetupAuth, (_req, res) => {
 
   <div class="card">
     <h2>Debug console</h2>
-    <p class="muted">Run a small allowlist of safe commands (no shell). Useful for debugging and recovery.</p>
+    <p class="muted">Run OpenClaw CLI commands directly (no shell), or use the quick allowlisted shortcuts below.</p>
+
+    <label style="margin-top:0.25rem">Full OpenClaw CLI command</label>
+    <div style="display:flex; gap:0.5rem; align-items:center">
+      <input id="cliCommand" placeholder="openclaw config set agents.defaults.model minimax/m2.1" style="flex: 1" />
+      <button id="cliRun" style="background:#1f2937">Run CLI</button>
+    </div>
+    <div class="muted" style="margin-top:0.4rem">Examples: <code>openclaw pairing list telegram</code>, <code>openclaw pairing approve telegram CODE</code>, <code>openclaw configure --section web</code>.</div>
+    <pre id="cliOut" style="white-space:pre-wrap"></pre>
 
     <div style="display:flex; gap:0.5rem; align-items:center">
       <select id="consoleCmd" style="flex: 1">
@@ -515,8 +523,10 @@ function buildOnboardArgs(payload) {
 
 function runCmd(cmd, args, opts = {}) {
   return new Promise((resolve) => {
+    const { timeoutMs: timeoutOpt, ...spawnOpts } = opts || {};
+    const timeoutMs = Number.isFinite(timeoutOpt) ? Number(timeoutOpt) : null;
     const proc = childProcess.spawn(cmd, args, {
-      ...opts,
+      ...spawnOpts,
       env: {
         ...process.env,
         OPENCLAW_STATE_DIR: STATE_DIR,
@@ -525,15 +535,43 @@ function runCmd(cmd, args, opts = {}) {
     });
 
     let out = "";
+    let settled = false;
+    let timer = null;
     proc.stdout?.on("data", (d) => (out += d.toString("utf8")));
     proc.stderr?.on("data", (d) => (out += d.toString("utf8")));
 
+    if (timeoutMs && timeoutMs > 0) {
+      timer = setTimeout(() => {
+        out += `\n[timeout] command exceeded ${timeoutMs}ms and was terminated\n`;
+        try {
+          proc.kill("SIGTERM");
+        } catch {
+          // ignore
+        }
+        setTimeout(() => {
+          try {
+            proc.kill("SIGKILL");
+          } catch {
+            // ignore
+          }
+        }, 2000);
+      }, timeoutMs);
+    }
+
     proc.on("error", (err) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
       out += `\n[spawn error] ${String(err)}\n`;
       resolve({ code: 127, output: out });
     });
 
-    proc.on("close", (code) => resolve({ code: code ?? 0, output: out }));
+    proc.on("close", (code) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      resolve({ code: code ?? 0, output: out });
+    });
   });
 }
 
@@ -910,7 +948,7 @@ app.post("/setup/api/console/run", requireSetupAuth, async (req, res) => {
         return res.status(400).json({ ok: false, error: "No OpenClaw arguments provided" });
       }
 
-      const r = await runCmd(OPENCLAW_NODE, clawArgs(parsed));
+      const r = await runCmd(OPENCLAW_NODE, clawArgs(parsed), { timeoutMs: 120_000 });
       return res.status(r.code === 0 ? 200 : 500).json({ ok: r.code === 0, output: redactSecrets(r.output) });
     }
     if (cmd === "openclaw.logs.tail") {
