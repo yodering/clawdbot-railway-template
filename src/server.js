@@ -311,12 +311,14 @@ app.get("/setup", requireSetupAuth, (_req, res) => {
         <option value="openclaw.doctor">openclaw doctor</option>
         <option value="openclaw.doctor.fix">openclaw doctor --fix</option>
         <option value="openclaw.channels.status.probe">openclaw channels status --probe</option>
+        <option value="openclaw.pairing.approve">openclaw pairing approve &lt;channel&gt; &lt;code&gt;</option>
         <option value="openclaw.pairing.list">openclaw pairing list &lt;channel&gt;</option>
+        <option value="openclaw.raw">openclaw raw args (advanced)</option>
         <option value="openclaw.logs.tail">openclaw logs --tail N</option>
         <option value="openclaw.config.get">openclaw config get &lt;path&gt;</option>
         <option value="openclaw.version">openclaw --version</option>
       </select>
-      <input id="consoleArg" placeholder="Optional arg (e.g. 200, gateway.port)" style="flex: 1" />
+      <input id="consoleArg" placeholder="Optional arg (e.g. 200, telegram 3EY4PUYS, pairing approve telegram 3EY4PUYS)" style="flex: 1" />
       <button id="consoleRun" style="background:#0f172a">Run</button>
     </div>
     <pre id="consoleOut" style="white-space:pre-wrap"></pre>
@@ -732,10 +734,72 @@ const ALLOWED_CONSOLE_COMMANDS = new Set([
   "openclaw.doctor",
   "openclaw.doctor.fix",
   "openclaw.channels.status.probe",
+  "openclaw.pairing.approve",
   "openclaw.pairing.list",
+  "openclaw.raw",
   "openclaw.logs.tail",
   "openclaw.config.get",
 ]);
+
+function parseArgString(input) {
+  const args = [];
+  let current = "";
+  let quote = null;
+  let escaped = false;
+
+  for (let i = 0; i < input.length; i += 1) {
+    const ch = input[i];
+
+    if (escaped) {
+      current += ch;
+      escaped = false;
+      continue;
+    }
+
+    if (ch === "\\") {
+      escaped = true;
+      continue;
+    }
+
+    if (quote) {
+      if (ch === quote) {
+        quote = null;
+      } else {
+        current += ch;
+      }
+      continue;
+    }
+
+    if (ch === "\"" || ch === "'") {
+      quote = ch;
+      continue;
+    }
+
+    if (/\s/.test(ch)) {
+      if (current.length > 0) {
+        args.push(current);
+        current = "";
+      }
+      continue;
+    }
+
+    current += ch;
+  }
+
+  if (escaped) {
+    current += "\\";
+  }
+
+  if (quote) {
+    throw new Error("Unterminated quote in arguments");
+  }
+
+  if (current.length > 0) {
+    args.push(current);
+  }
+
+  return args;
+}
 
 app.post("/setup/api/console/run", requireSetupAuth, async (req, res) => {
   const payload = req.body || {};
@@ -794,12 +858,59 @@ app.post("/setup/api/console/run", requireSetupAuth, async (req, res) => {
         .status(plain.code === 0 ? 200 : 500)
         .json({ ok: plain.code === 0, output: redactSecrets(plain.output || probe.output) });
     }
+    if (cmd === "openclaw.pairing.approve") {
+      const parsed = parseArgString(arg);
+      if (parsed.length < 2) {
+        return res.status(400).json({
+          ok: false,
+          error: "Usage: <channel> <code> (example: telegram 3EY4PUYS)",
+        });
+      }
+
+      const channel = parsed[0].toLowerCase();
+      const code = parsed[1];
+      if (!/^[a-z0-9_-]{2,32}$/.test(channel)) {
+        return res.status(400).json({ ok: false, error: "Invalid channel name" });
+      }
+      if (!/^[A-Za-z0-9_-]{4,128}$/.test(code)) {
+        return res.status(400).json({ ok: false, error: "Invalid pairing code" });
+      }
+
+      const r = await runCmd(OPENCLAW_NODE, clawArgs(["pairing", "approve", channel, code]));
+      return res.status(r.code === 0 ? 200 : 500).json({ ok: r.code === 0, output: redactSecrets(r.output) });
+    }
     if (cmd === "openclaw.pairing.list") {
       const channel = (arg || "telegram").trim().toLowerCase();
       if (!/^[a-z0-9_-]{2,32}$/.test(channel)) {
         return res.status(400).json({ ok: false, error: "Invalid channel name" });
       }
       const r = await runCmd(OPENCLAW_NODE, clawArgs(["pairing", "list", channel]));
+      return res.status(r.code === 0 ? 200 : 500).json({ ok: r.code === 0, output: redactSecrets(r.output) });
+    }
+    if (cmd === "openclaw.raw") {
+      if (!arg) {
+        return res.status(400).json({
+          ok: false,
+          error: "Provide OpenClaw args, e.g. `pairing approve telegram 3EY4PUYS`",
+        });
+      }
+      if (arg.length > 1000) {
+        return res.status(400).json({ ok: false, error: "Argument string too long" });
+      }
+
+      const parsed = parseArgString(arg);
+      if (!parsed.length) {
+        return res.status(400).json({ ok: false, error: "No arguments provided" });
+      }
+
+      if (parsed[0].toLowerCase() === "openclaw") {
+        parsed.shift();
+      }
+      if (!parsed.length) {
+        return res.status(400).json({ ok: false, error: "No OpenClaw arguments provided" });
+      }
+
+      const r = await runCmd(OPENCLAW_NODE, clawArgs(parsed));
       return res.status(r.code === 0 ? 200 : 500).json({ ok: r.code === 0, output: redactSecrets(r.output) });
     }
     if (cmd === "openclaw.logs.tail") {
