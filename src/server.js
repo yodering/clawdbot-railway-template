@@ -645,7 +645,7 @@ app.post("/setup/api/run", requireSetupAuth, async (req, res) => {
 
   return res.status(ok ? 200 : 500).json({
     ok,
-    output: `${onboard.output}${extra}`,
+    output: redactSecrets(`${onboard.output}${extra}`),
   });
   } catch (err) {
     console.error("[/setup/api/run] error:", err);
@@ -685,7 +685,8 @@ function redactSecrets(text) {
     .replace(/(sk-[A-Za-z0-9_-]{10,})/g, "[REDACTED]")
     .replace(/(gho_[A-Za-z0-9_]{10,})/g, "[REDACTED]")
     .replace(/(xox[baprs]-[A-Za-z0-9-]{10,})/g, "[REDACTED]")
-    .replace(/(AA[A-Za-z0-9_-]{10,}:\S{10,})/g, "[REDACTED]");
+    .replace(/(AA[A-Za-z0-9_-]{10,}:\S{10,})/g, "[REDACTED]")
+    .replace(/\b\d{6,}:[A-Za-z0-9_-]{20,}\b/g, "[REDACTED]");
 }
 
 const ALLOWED_CONSOLE_COMMANDS = new Set([
@@ -753,8 +754,28 @@ app.post("/setup/api/console/run", requireSetupAuth, async (req, res) => {
     }
     if (cmd === "openclaw.logs.tail") {
       const lines = Math.max(50, Math.min(1000, Number.parseInt(arg || "200", 10) || 200));
-      const r = await runCmd(OPENCLAW_NODE, clawArgs(["logs", "--tail", String(lines)]));
-      return res.status(r.code === 0 ? 200 : 500).json({ ok: r.code === 0, output: redactSecrets(r.output) });
+      const candidates = [
+        ["logs", "--tail", String(lines)],
+        ["logs", "--lines", String(lines)],
+        ["logs", "-n", String(lines)],
+        ["logs", "tail", String(lines)],
+        ["logs"],
+      ];
+
+      for (let i = 0; i < candidates.length; i += 1) {
+        const r = await runCmd(OPENCLAW_NODE, clawArgs(candidates[i]));
+        if (r.code === 0) {
+          return res.json({ ok: true, output: redactSecrets(r.output) });
+        }
+
+        const txt = String(r.output || "");
+        const looksLikeCliSyntaxMismatch =
+          /unknown option|unknown command|usage:|Unexpected argument/i.test(txt);
+
+        if (!looksLikeCliSyntaxMismatch || i === candidates.length - 1) {
+          return res.status(500).json({ ok: false, output: redactSecrets(txt) });
+        }
+      }
     }
     if (cmd === "openclaw.config.get") {
       if (!arg) return res.status(400).json({ ok: false, error: "Missing config path" });
